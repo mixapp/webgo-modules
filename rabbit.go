@@ -85,28 +85,27 @@ func (r *RabbitConnection) AddExchange(exchange *Exchange) {
 	log.Debug("Add Exchange", exchange.Name)
 	r.exchanges = append(r.exchanges, exchange)
 }
+
 func (r *RabbitConnection) ServeMQ() {
-	go func(rabbitConn *RabbitConnection) {
-		log.Debug("Connect to RabbitMQ, ID:", r.id)
-		rabbitConn.done = make(chan bool)
+	log.Debug("Connect to RabbitMQ, ID:", r.id)
+	r.done = make(chan bool)
 
-		for {
-			err := rabbitConn.connect()
-			if err != nil {
+	for {
+		err := r.connect()
+		if err != nil {
 
-				log.Error(err)
+			log.Error(err)
 
-				if rabbitConn.conn != nil {
-					rabbitConn.conn.Close()
-				}
-				if rabbitConn.ch != nil {
-					rabbitConn.ch.Close()
-				}
-
-				time.Sleep(time.Second * 5)
+			if r.conn != nil {
+				r.conn.Close()
 			}
+			if r.ch != nil {
+				r.ch.Close()
+			}
+
+			time.Sleep(time.Second * 5)
 		}
-	}(r)
+	}
 }
 
 func (r *RabbitConnection) AddQueue(q *Queue) {
