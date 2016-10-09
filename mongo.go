@@ -1,12 +1,11 @@
 package webgo_modules
 
-
 import (
 	"errors"
+	"github.com/IntelliQru/logger"
 	"gopkg.in/mgo.v2"
 	"sync"
 	"time"
-	"github.com/IntelliQru/logger"
 )
 
 var mongo *MongoCluster
@@ -25,17 +24,16 @@ type (
 	MongoCluster struct {
 		connections map[string]MongoConnection
 		poolLimit   int
-		logger *logger.Logger
+		logger      *logger.Logger
 	}
 )
-
 
 func NewMongoCluster(log *logger.Logger) *MongoCluster {
 	if mongo == nil {
 		mongo = &MongoCluster{
-			logger: log,
+			logger:      log,
 			connections: make(map[string]MongoConnection),
-			poolLimit: 4096,
+			poolLimit:   4096,
 		}
 	}
 
