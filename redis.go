@@ -3,7 +3,7 @@ package webgo_modules
 import (
 	"errors"
 	"github.com/IntelliQru/logger"
-	"gopkg.in/redis.v3"
+	"gopkg.in/redis.v4"
 )
 
 type (
