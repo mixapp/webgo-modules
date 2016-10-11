@@ -175,7 +175,7 @@ func (r *RabbitConnection) connect() (err error) {
 	return
 }
 
-func (r *RabbitConnection) Publish(exchange, queueName, routeKey string, data interface{}) (err error) {
+func (r *RabbitConnection) Publish(exchange, routeKey string, data interface{}) (err error) {
 
 	body, err := json.Marshal(data)
 	if err != nil {
