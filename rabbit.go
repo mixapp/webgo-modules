@@ -5,6 +5,7 @@ import (
 	"github.com/IntelliQru/logger"
 	"github.com/streadway/amqp"
 	"time"
+	"net"
 )
 
 var log *logger.Logger
@@ -38,6 +39,7 @@ type (
 		Handler    func(dl *amqp.Delivery)
 		/*		queueMQ    *amqp.Queue*/
 		done   chan bool
+		error chan error
 		inChan <-chan amqp.Delivery
 	}
 
@@ -89,13 +91,11 @@ func (r *RabbitConnection) AddExchange(exchange *Exchange) {
 func (r *RabbitConnection) ServeMQ() {
 	log.Debug("Connect to RabbitMQ, ID:", r.id)
 	r.done = make(chan bool)
+//	r.error = make(chan error)
 
 	for {
 		err := r.connect()
 		if err != nil {
-
-			log.Error(err)
-
 			if r.conn != nil {
 				r.conn.Close()
 			}
@@ -105,6 +105,7 @@ func (r *RabbitConnection) ServeMQ() {
 
 			time.Sleep(time.Second * 5)
 		}
+		log.Debug("Reconnect to RabbitMQ, ID:", r.id)
 	}
 }
 
@@ -117,17 +118,26 @@ func (r *RabbitConnection) AddQueue(q *Queue) {
 }
 
 func (r *RabbitConnection) connect() (err error) {
-	r.conn, err = amqp.Dial(r.ampq)
+	r.conn, err = amqp.DialConfig(r.ampq, amqp.Config{
+		Heartbeat: 2 * time.Second,
+		Dial: func(network, addr string) (net.Conn, error) {
+			return net.DialTimeout(network, addr, 2*time.Second)
+		},
+	})
+	//r.conn, err = amqp.Dial(r.ampq)
 	if err != nil {
+		log.Error(err)
 		return err
 	}
 
 	r.ch, err = r.conn.Channel()
 	if err != nil {
+		log.Error(err)
 		return err
 	}
 
 	if err = r.ch.Confirm(false); err != nil {
+		log.Error(err)
 		return err
 	}
 
@@ -136,6 +146,7 @@ func (r *RabbitConnection) connect() (err error) {
 	// Объявляем обменники
 	for _, exchange := range r.exchanges {
 		if err := r.ch.ExchangeDeclare(exchange.Name, exchange.Type, exchange.Durable, exchange.Autodelete, false, false, nil); err != nil {
+			log.Error(err)
 			return err
 		}
 	}
@@ -144,6 +155,7 @@ func (r *RabbitConnection) connect() (err error) {
 
 		_, err := r.ch.QueueDeclare(r.queues[key].Name, r.queues[key].Durable, r.queues[key].Autodelete, false, false, nil)
 		if err != nil {
+			log.Error(err)
 			return err
 		}
 
@@ -151,12 +163,14 @@ func (r *RabbitConnection) connect() (err error) {
 		if len(r.queues[key].Exchange) != 0 {
 			err = r.ch.QueueBind(r.queues[key].Name, r.queues[key].Key, r.queues[key].Exchange, false, nil)
 			if err != nil {
+				log.Error(err)
 				return err
 			}
 		}
 
 		r.queues[key].inChan, err = r.ch.Consume(r.queues[key].Name, "", false, false, false, false, nil)
 		if err != nil {
+			log.Error(err)
 			return err
 		}
 
@@ -167,6 +181,7 @@ func (r *RabbitConnection) connect() (err error) {
 
 	err = r.ch.Qos(1, 0, true)
 	if err != nil {
+		log.Error(err)
 		return err
 	}
 
@@ -189,10 +204,19 @@ func (r *RabbitConnection) Publish(exchange, routeKey string, data interface{}) 
 		Body:         body,
 	}
 
-	err = r.ch.Publish(exchange, routeKey, true, false, msg)
-	if err != nil {
-		return
+	tries := 0
+
+	for tries < 10 {
+		err = r.ch.Publish(exchange, routeKey, true, false, msg)
+		if err != nil {
+			log.Error("Error publish message, tries: ", tries)
+			tries++
+			r.done <-true
+			continue
+		}
+		break
 	}
+
 
 	return
 }
