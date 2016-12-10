@@ -18,7 +18,6 @@ type (
 		Login         string
 		Password      string
 		Session       *mgo.Session
-		CursorTimeout int
 		locker        sync.Mutex
 	}
 
@@ -64,7 +63,7 @@ func (m *MongoCluster) NewConnection(conn MongoConnection) (sess *mgo.Session, e
 		return
 	}
 
-	sess.SetCursorTimeout(time.Duration(conn.CursorTimeout) * time.Millisecond)
+	//sess.SetCursorTimeout(time.Duration(conn.CursorTimeout) * time.Millisecond)
 	sess.SetSyncTimeout(time.Second)
 	sess.SetPoolLimit(m.poolLimit)
 	sess.SetMode(mgo.Monotonic, true)
