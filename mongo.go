@@ -12,13 +12,14 @@ var mongo *MongoCluster
 
 type (
 	MongoConnection struct {
-		Id       string
-		Host     string
-		Name     string
-		Login    string
-		Password string
-		Session  *mgo.Session
-		locker   sync.Mutex
+		Id            string
+		Host          string
+		Name          string
+		Login         string
+		Password      string
+		Session       *mgo.Session
+		CursorTimeout int
+		locker        sync.Mutex
 	}
 
 	MongoCluster struct {
@@ -63,7 +64,7 @@ func (m *MongoCluster) NewConnection(conn MongoConnection) (sess *mgo.Session, e
 		return
 	}
 
-	sess.SetCursorTimeout(0)
+	sess.SetCursorTimeout(conn.CursorTimeout)
 	sess.SetSyncTimeout(time.Second)
 	sess.SetPoolLimit(m.poolLimit)
 	sess.SetMode(mgo.Monotonic, true)
