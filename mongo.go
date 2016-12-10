@@ -64,7 +64,7 @@ func (m *MongoCluster) NewConnection(conn MongoConnection) (sess *mgo.Session, e
 		return
 	}
 
-	sess.SetCursorTimeout(conn.CursorTimeout)
+	sess.SetCursorTimeout(time.Duration(conn.CursorTimeout) * time.Millisecond)
 	sess.SetSyncTimeout(time.Second)
 	sess.SetPoolLimit(m.poolLimit)
 	sess.SetMode(mgo.Monotonic, true)
