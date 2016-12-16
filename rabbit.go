@@ -149,7 +149,14 @@ func (r *RabbitConnection) connect() (err error) {
 		return err
 	}
 
-	//r.ackChn, r.nackChn = r.Channel.NotifyConfirm(make(chan uint64, 1), make(chan uint64, 1))
+	//r.ackChn, r.nackChn = r.ch.NotifyConfirm(make(chan uint64, 1), make(chan uint64, 1))
+
+
+	err = r.ch.Qos(r.Qos, 0, true)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
 
 	// Объявляем обменники
 	for _, exchange := range r.exchanges {
@@ -185,12 +192,6 @@ func (r *RabbitConnection) connect() (err error) {
 		/*r.queues[key].queueMQ = &q*/
 		r.queues[key].done = r.done
 		go r.queues[key].listenQueue()
-	}
-
-	err = r.ch.Qos(r.Qos, 0, true)
-	if err != nil {
-		log.Error(err)
-		return err
 	}
 
 	<-r.done
