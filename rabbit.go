@@ -128,9 +128,10 @@ func (r *RabbitConnection) connect() (err error) {
 	})
 
 	//На всякий случай, если кто-то решил не через метод создать
-	if r.Qos == 0 {
+	/* АМИНЬ */
+	/*if r.Qos == 0 {
 		r.Qos = 1
-	}
+	}*/
 
 	//r.conn, err = amqp.Dial(r.ampq)
 	if err != nil {
