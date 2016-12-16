@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"github.com/IntelliQru/logger"
 	"github.com/streadway/amqp"
-	"time"
 	"net"
+	"time"
 )
 
 var log *logger.Logger
@@ -21,6 +21,7 @@ type (
 		queues    map[string]*Queue
 		done      chan bool
 		exchanges []*Exchange
+		Qos       int
 	}
 
 	Exchange struct {
@@ -39,7 +40,7 @@ type (
 		Handler    func(dl *amqp.Delivery)
 		/*		queueMQ    *amqp.Queue*/
 		done   chan bool
-		error chan error
+		error  chan error
 		inChan <-chan amqp.Delivery
 	}
 
@@ -73,6 +74,7 @@ func (r *RabbitCluster) NewConnection(id string, amqp string) *RabbitConnection 
 	rConn := RabbitConnection{
 		id:   id,
 		ampq: amqp,
+		Qos:  1,
 	}
 
 	r.connections[id] = &rConn
@@ -91,7 +93,7 @@ func (r *RabbitConnection) AddExchange(exchange *Exchange) {
 func (r *RabbitConnection) ServeMQ() {
 	log.Debug("Connect to RabbitMQ, ID:", r.id)
 	r.done = make(chan bool)
-//	r.error = make(chan error)
+	//	r.error = make(chan error)
 
 	for {
 		err := r.connect()
@@ -124,6 +126,12 @@ func (r *RabbitConnection) connect() (err error) {
 			return net.DialTimeout(network, addr, 2*time.Second)
 		},
 	})
+
+	//На всякий случай, если кто-то решил не через метод создать
+	if r.Qos == 0 {
+		r.Qos = 1
+	}
+
 	//r.conn, err = amqp.Dial(r.ampq)
 	if err != nil {
 		log.Error(err)
@@ -179,7 +187,7 @@ func (r *RabbitConnection) connect() (err error) {
 		go r.queues[key].listenQueue()
 	}
 
-	err = r.ch.Qos(1, 0, true)
+	err = r.ch.Qos(r.Qos, 0, true)
 	if err != nil {
 		log.Error(err)
 		return err
@@ -211,12 +219,11 @@ func (r *RabbitConnection) Publish(exchange, routeKey string, data interface{}) 
 		if err != nil {
 			log.Error("Error publish message, tries: ", tries)
 			tries++
-			r.done <-true
+			r.done <- true
 			continue
 		}
 		break
 	}
-
 
 	return
 }
