@@ -98,12 +98,12 @@ func (r *RabbitConnection) ServeMQ() {
 	for {
 		err := r.connect()
 		if err != nil {
-			if r.conn != nil {
+			/*if r.conn != nil {
 				r.conn.Close()
 			}
 			if r.ch != nil {
 				r.ch.Close()
-			}
+			}*/
 
 			time.Sleep(time.Second * 5)
 		}
@@ -127,6 +127,8 @@ func (r *RabbitConnection) connect() (err error) {
 		},
 	})
 
+	defer r.conn.Close()
+
 	//На всякий случай, если кто-то решил не через метод создать
 	/* АМИНЬ */
 	/*if r.Qos == 0 {
@@ -140,6 +142,7 @@ func (r *RabbitConnection) connect() (err error) {
 	}
 
 	r.ch, err = r.conn.Channel()
+	defer r.ch.Close()
 	if err != nil {
 		log.Error(err)
 		return err
