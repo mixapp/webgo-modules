@@ -2,52 +2,108 @@ package webgo_modules
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"sync"
+	"time"
+
 	"github.com/IntelliQru/logger"
 	"github.com/streadway/amqp"
-	"net"
-	"time"
 )
 
-var log *logger.Logger
-
-var rabbitCluster *RabbitCluster
-
-type (
-	RabbitConnection struct {
-		id        string
-		conn      *amqp.Connection
-		ch        *amqp.Channel
-		ampq      string
-		queues    map[string]*Queue
-		done      chan bool
-		exchanges []*Exchange
-		Qos       int
-	}
-
-	Exchange struct {
-		Name       string
-		Type       string
-		Durable    bool
-		Autodelete bool
-	}
-
-	Queue struct {
-		Name       string
-		Key        string
-		Exchange   string
-		Durable    bool
-		Autodelete bool
-		Handler    func(dl *amqp.Delivery)
-		/*		queueMQ    *amqp.Queue*/
-		done   chan bool
-		error  chan error
-		inChan <-chan amqp.Delivery
-	}
-
-	RabbitCluster struct {
-		connections map[string]*RabbitConnection
-	}
+var (
+	log           *logger.Logger
+	rabbitCluster *RabbitCluster
 )
+
+type ConnectionState uint8
+
+const (
+	CONNECTION_NOT_WORK  ConnectionState = 0
+	CONNECTION_WORK      ConnectionState = 1
+	CONNECTION_STOP      ConnectionState = 2
+	CONNECTION_RECONNECT ConnectionState = 3
+	CONNECTION_CRUSH     ConnectionState = 4 // only tests
+)
+
+type RabbitCluster struct {
+	connections map[string]*RabbitConnection
+}
+
+type RabbitConnection struct {
+	io.Closer
+	mutex sync.RWMutex
+	state ConnectionState
+
+	id        string
+	conn      *amqp.Connection
+	ch        *amqp.Channel
+	ampq      string
+	queues    map[string]*Queue
+	exchanges []*Exchange
+	Qos       int
+}
+
+type Exchange struct {
+	Name       string
+	Type       string
+	Durable    bool
+	Autodelete bool
+}
+
+type Queue struct {
+	Name       string
+	Key        string
+	Exchange   string
+	Durable    bool
+	Autodelete bool
+	Handler    func(dl *amqp.Delivery)
+	inChan     <-chan amqp.Delivery
+	mutex      sync.RWMutex
+}
+
+// QUEUE
+
+func (q *Queue) listenQueue() {
+
+	log.Debug("Listen queue:", q.Name)
+	defer func() {
+		q.setCachannel(nil)
+		log.Debug("-Listen queue:", q.Name)
+	}()
+
+	for {
+		if dl, open := <-q.inChan; !open {
+			return
+		} else {
+			go q.Handler(&dl)
+		}
+	}
+}
+
+func (q Queue) active() bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	return q.inChan != nil
+}
+
+func (q *Queue) setCachannel(ch <-chan amqp.Delivery) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.inChan = ch
+}
+
+// EXCHANGE
+
+func NewExchange() *Exchange {
+	return new(Exchange)
+}
+
+// CLUSTER
 
 func NewRabbitCluster(logger *logger.Logger) *RabbitCluster {
 	log = logger
@@ -65,149 +121,82 @@ func GetRabbitCluster() *RabbitCluster {
 	return rabbitCluster
 }
 
-func NewExchange() *Exchange {
-	e := Exchange{}
-	return &e
-}
-
 func (r *RabbitCluster) NewConnection(id string, amqp string) *RabbitConnection {
-	rConn := RabbitConnection{
+
+	conn := &RabbitConnection{
 		id:   id,
 		ampq: amqp,
-		Qos:  1,
+		Qos:  1, // https://godoc.org/github.com/streadway/amqp#Channel.Qos
 	}
 
-	r.connections[id] = &rConn
-	return &rConn
+	if r.connections == nil {
+		r.connections = make(map[string]*RabbitConnection)
+	}
+
+	r.connections[id] = conn
+	return conn
 }
 
 func (r *RabbitCluster) GetConnection(clusterId string) *RabbitConnection {
-	return r.connections[clusterId]
-}
 
-func (r *RabbitConnection) AddExchange(exchange *Exchange) {
-	log.Debug("Add Exchange", exchange.Name)
-	r.exchanges = append(r.exchanges, exchange)
-}
-
-func (r *RabbitConnection) ServeMQ() {
-	log.Debug("Connect to RabbitMQ, ID:", r.id)
-	r.done = make(chan bool)
-	//	r.error = make(chan error)
-
-	for {
-		err := r.connect()
-		if err != nil {
-			/*if r.conn != nil {
-				r.conn.Close()
-			}
-			if r.ch != nil {
-				r.ch.Close()
-			}*/
-
-			time.Sleep(time.Second * 5)
-		}
-		log.Debug("Reconnect to RabbitMQ, ID:", r.id)
+	if r.connections == nil {
+		return nil
+	} else if val, ok := r.connections[clusterId]; !ok {
+		return nil
+	} else {
+		return val
 	}
 }
 
+// CONNECTION
+
+func (r *RabbitConnection) Close() error {
+	r.setState(CONNECTION_STOP)
+	return nil
+}
+
+func (r *RabbitConnection) AddExchange(exchange *Exchange) {
+
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	log.Debug("Add exchange:", exchange.Name)
+	r.exchanges = append(r.exchanges, exchange)
+
+	r.state = CONNECTION_RECONNECT
+}
+
 func (r *RabbitConnection) AddQueue(q *Queue) {
+
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	log.Debug("Add queue:", q.Name)
+
 	if r.queues == nil {
 		r.queues = make(map[string]*Queue)
 	}
 
 	r.queues[q.Name] = q
-}
-
-func (r *RabbitConnection) connect() (err error) {
-	r.conn, err = amqp.DialConfig(r.ampq, amqp.Config{
-		Heartbeat: 2 * time.Second,
-		Dial: func(network, addr string) (net.Conn, error) {
-			return net.DialTimeout(network, addr, 2*time.Second)
-		},
-	})
-
-	defer r.conn.Close()
-
-	//На всякий случай, если кто-то решил не через метод создать
-	/* АМИНЬ */
-	/*if r.Qos == 0 {
-		r.Qos = 1
-	}*/
-
-	//r.conn, err = amqp.Dial(r.ampq)
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	r.ch, err = r.conn.Channel()
-	defer r.ch.Close()
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	if err = r.ch.Confirm(false); err != nil {
-		log.Error(err)
-		return err
-	}
-
-	//r.ackChn, r.nackChn = r.ch.NotifyConfirm(make(chan uint64, 1), make(chan uint64, 1))
-
-
-	err = r.ch.Qos(r.Qos, 0, true)
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// Объявляем обменники
-	for _, exchange := range r.exchanges {
-		if err := r.ch.ExchangeDeclare(exchange.Name, exchange.Type, exchange.Durable, exchange.Autodelete, false, false, nil); err != nil {
-			log.Error(err)
-			return err
-		}
-	}
-
-	for key := range r.queues {
-
-		_, err := r.ch.QueueDeclare(r.queues[key].Name, r.queues[key].Durable, r.queues[key].Autodelete, false, false, nil)
-		if err != nil {
-			log.Error(err)
-			return err
-		}
-
-		// Привязываем очередь к обменнику
-		if len(r.queues[key].Exchange) != 0 {
-			err = r.ch.QueueBind(r.queues[key].Name, r.queues[key].Key, r.queues[key].Exchange, false, nil)
-			if err != nil {
-				log.Error(err)
-				return err
-			}
-		}
-
-		r.queues[key].inChan, err = r.ch.Consume(r.queues[key].Name, "", false, false, false, false, nil)
-		if err != nil {
-			log.Error(err)
-			return err
-		}
-
-		/*r.queues[key].queueMQ = &q*/
-		r.queues[key].done = r.done
-		go r.queues[key].listenQueue()
-	}
-
-	<-r.done
-
-	return
+	r.state = CONNECTION_RECONNECT
 }
 
 func (r *RabbitConnection) Publish(exchange, routeKey string, data interface{}) (err error) {
 
-	body, err := json.Marshal(data)
-	if err != nil {
-		return
+	defer func() {
+		if errorText := recover(); errorText != nil {
+			// if connection is closed or now reconnecting
+			err = errors.New("Failed send push to RabbitMQ: " + fmt.Sprintln(errorText))
+			log.Error(err)
+		}
+	}()
+
+	var body []byte
+
+	if val, e := json.Marshal(data); e != nil {
+		return errors.New("Failed convert source data to json:" + e.Error())
+	} else {
+		body = val
 	}
 
 	msg := amqp.Publishing{
@@ -217,30 +206,176 @@ func (r *RabbitConnection) Publish(exchange, routeKey string, data interface{}) 
 		Body:         body,
 	}
 
-	tries := 0
+	for tries := 0; tries < 10; tries++ {
+		if err = r.ch.Publish(exchange, routeKey, true, false, msg); err != nil {
+			log.Error("Failed publish message to RabbitMQ, tries: ", tries)
 
-	for tries < 10 {
-		err = r.ch.Publish(exchange, routeKey, true, false, msg)
-		if err != nil {
-			log.Error("Error publish message, tries: ", tries)
-			tries++
-			r.done <- true
-			continue
+			switch r.getState() {
+			case CONNECTION_WORK, CONNECTION_NOT_WORK:
+				time.Sleep(time.Second)
+				r.setState(CONNECTION_RECONNECT)
+			}
+
+			time.Sleep(time.Second) // waiting reconnect
+		} else {
+			break // all right
 		}
-		break
+	}
+
+	return
+}
+func (r *RabbitConnection) ServeMQ() {
+
+	for {
+		log.Debug("Connect to RabbitMQ, ID:", r.id)
+
+		r.mutex.Lock()
+		state := r.state
+		r.state = CONNECTION_NOT_WORK
+		r.mutex.Unlock()
+
+		if state == CONNECTION_STOP {
+			break
+		}
+
+		if err := r.connect(); err != nil {
+			time.Sleep(time.Second / 2)
+		}
+
+		if state != CONNECTION_STOP {
+			log.Debug("Reconnect to RabbitMQ, ID:", r.id)
+		}
+	}
+}
+
+func (r *RabbitConnection) connect() (err error) {
+
+	defer func() {
+		if errorText := recover(); errorText != nil {
+			err = errors.New(fmt.Sprintln(errorText))
+			log.Error(err)
+		}
+
+		if r.ch != nil {
+			r.ch.Close()
+		}
+
+		if r.conn != nil {
+			r.conn.Close()
+		}
+
+		log.Debug("RabbitMQ connection close")
+	}()
+
+	connCfg := amqp.Config{
+		Heartbeat: 2 * time.Second,
+		Dial: func(network, addr string) (net.Conn, error) {
+			return net.DialTimeout(network, addr, 2*time.Second)
+		},
+	}
+
+	if r.conn, err = amqp.DialConfig(r.ampq, connCfg); err != nil {
+		log.Error(err)
+		return err
+	} else if r.ch, err = r.conn.Channel(); err != nil {
+		log.Error(err)
+		return err
+	} else if err = r.ch.Confirm(false); err != nil {
+		log.Error(err)
+		return err
+	} else if err = r.ch.Qos(r.Qos, 0, true); err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// Declaring exchangers
+	for _, exchange := range r.exchanges {
+		if err = r.ch.ExchangeDeclare(
+			exchange.Name,
+			exchange.Type,
+			exchange.Durable,
+			exchange.Autodelete,
+			false, // internal
+			false, // nowait
+			nil,   // args
+		); err != nil {
+			log.Error(err)
+			return err
+		}
+	}
+
+	for _, queue := range r.queues {
+
+		if _, err = r.ch.QueueDeclare(
+			queue.Name,
+			queue.Durable, // duration (note: not durable)
+			queue.Autodelete,
+			false, // exclusive
+			false, // nowait
+			nil,   // args
+		); err != nil {
+			log.Error(err)
+			return err
+		}
+
+		if len(queue.Exchange) != 0 {
+			// Linking queries and exchangers
+			if err = r.ch.QueueBind(queue.Name, queue.Key, queue.Exchange, false, nil); err != nil {
+				log.Error(err)
+				return err
+			}
+		}
+
+		if ch, err := r.ch.Consume(queue.Name, "", false, false, false, false, nil); err != nil {
+			log.Error(err)
+			return err
+		} else {
+			queue.setCachannel(ch)
+		}
+
+		if info, err := r.ch.QueueInspect(queue.Name); err == nil {
+			log.Log("Messages in RabbitMQ queue:", queue.Name, "=", info.Messages)
+		} else {
+			log.Error(err)
+			return err
+		}
+
+		go queue.listenQueue()
+	}
+
+	r.setState(CONNECTION_WORK)
+
+	for {
+		time.Sleep(time.Second / 10)
+
+		if state := r.getState(); state == CONNECTION_STOP || state == CONNECTION_RECONNECT {
+			return
+		} else if state == CONNECTION_CRUSH {
+			// Only for tests
+			panic("Run connection crush test")
+		}
+
+		for _, queue := range r.queues {
+			if !queue.active() {
+				r.setState(CONNECTION_RECONNECT)
+				return
+			}
+		}
 	}
 
 	return
 }
 
-func (q *Queue) listenQueue() {
-	log.Debug("Listen queue")
-	defer func() {
-		q.done <- true
-	}()
-	for dl := range q.inChan {
-		go q.Handler(&dl)
-	}
+func (r *RabbitConnection) setState(state ConnectionState) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
 
-	return
+	r.state = state
+}
+
+func (r RabbitConnection) getState() ConnectionState {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	return r.state
 }
