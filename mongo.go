@@ -2,23 +2,27 @@ package webgo_modules
 
 import (
 	"errors"
-	"github.com/IntelliQru/logger"
-	"gopkg.in/mgo.v2"
 	"sync"
 	"time"
+
+	"github.com/IntelliQru/logger"
+	"gopkg.in/mgo.v2"
 )
 
 var mongo *MongoCluster
 
 type (
 	MongoConnection struct {
-		Id            string
-		Host          string
-		Name          string
-		Login         string
-		Password      string
-		Session       *mgo.Session
-		locker        sync.Mutex
+		Id       string
+		Host     string
+		Name     string
+		Login    string
+		Password string
+		Session  *mgo.Session
+
+		mode   mgo.Mode
+		once   sync.Once
+		locker sync.RWMutex
 	}
 
 	MongoCluster struct {
@@ -27,6 +31,32 @@ type (
 		logger      *logger.Logger
 	}
 )
+
+func (m *MongoConnection) SetMode(mode mgo.Mode) {
+	m.internalInit()
+
+	m.locker.Lock()
+	m.mode = mode
+	m.locker.Unlock()
+}
+
+func (m *MongoConnection) Mode() (mode mgo.Mode) {
+	m.internalInit()
+
+	m.locker.RLock()
+	mode = m.mode
+	m.locker.RUnlock()
+
+	return mode
+}
+
+func (m *MongoConnection) internalInit() {
+	m.once.Do(func() {
+		m.locker.Lock()
+		m.mode = mgo.Monotonic
+		m.locker.Unlock()
+	})
+}
 
 func NewMongoCluster(log *logger.Logger) *MongoCluster {
 	if mongo == nil {
@@ -66,7 +96,7 @@ func (m *MongoCluster) NewConnection(conn MongoConnection) (sess *mgo.Session, e
 	//sess.SetCursorTimeout(time.Duration(conn.CursorTimeout) * time.Millisecond)
 	sess.SetSyncTimeout(time.Second)
 	sess.SetPoolLimit(m.poolLimit)
-	sess.SetMode(mgo.Monotonic, true)
+	sess.SetMode(conn.Mode(), true)
 
 	conn.Session = sess
 
