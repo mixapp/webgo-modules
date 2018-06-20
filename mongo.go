@@ -2,7 +2,7 @@ package webgo_modules
 
 import (
 	"errors"
-	"github.com/IntelliQru/logger"
+	"github.com/mixapp/logger"
 	"gopkg.in/mgo.v2"
 	"sync"
 	"time"

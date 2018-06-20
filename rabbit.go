@@ -2,7 +2,7 @@ package webgo_modules
 
 import (
 	"encoding/json"
-	"github.com/IntelliQru/logger"
+	"github.com/mixapp/logger"
 	"github.com/streadway/amqp"
 	"net"
 	"time"
